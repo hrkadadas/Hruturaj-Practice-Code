@@ -1,0 +1,185 @@
+﻿## PROCESSES
+Currently debugging:
+- iisexpress.exe (PID: 23636)
+
+## EXCEPTION
+Exception Type: System.IO.FileLoadException
+Exception Message: Could not load file or assembly 'System.Threading.Tasks.Extensions, Version=4.2.4.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51' or one of its dependencies. The located assembly's manifest definition does not match the assembly reference. (Exception from HRESULT: 0x80131040)
+Piece of code that has the exception:
+```csharp D:\Practices\Hruturaj Proj\Dovetail Capital\RegulatorFileExtractionAPI\Controllers\RegulatorFileExtractionController.cs
+21:         [HttpPost]
+22:         [Route("extract-files")]
+23:         public async Task<IHttpActionResult> ExtractFiles(APIRequest request)
+24:         {
+25:             var response = new APIResponse();
+26: 
+27:             try
+28:             {
+29:                 if (request == null)
+30:                 {
+31:                     response.Status = "Failed";
+32:                     response.Message = "Invalid request.";
+33:                     response.Error = "Request cannot be null.";
+34:                     response.Data = null;
+35: 
+36:                     return BadRequest(response.Message);
+37:                 }
+38: 
+39:                 if (string.IsNullOrWhiteSpace(request.RegulatorName))
+40:                 {
+41:                     response.Status = "Failed";
+42:                     response.Message = "RegulatorName is required.";
+43:                     response.Error = null;
+44:                     response.Data = null;
+45: 
+46:                     return Ok(response);
+47:                 }
+48: 
+49:                 if (!string.Equals(
+50:                     request.RegulatorName,
+51:                     "ifsca",
+52:                     StringComparison.OrdinalIgnoreCase))
+53:                 {
+54:                     response.Status = "Failed";
+55:                     response.Message = "Unsupported regulator.";
+56:                     response.Error = null;
+57:                     response.Data = null;
+58: 
+59:                     return Ok(response);
+60:                 }
+61: 
+62:                 if (string.IsNullOrWhiteSpace(request.RegulatorKey))
+63:                 {
+64:                     response.Status = "Failed";
+65:                     response.Message = "RegulatorKey is required.";
+66:                     response.Error = null;
+67:                     response.Data = null;
+68: 
+69:                     return Ok(response);
+70:                 }
+71: 
+72:                 var service = new IfscaScraperService();
+73: 
+74:                 List<FileExtractionModelFromURL> files = await service.GetLatestDocumentsAsync(request);
+75: 
+76:                 response.Status = "Success";
+77: 
+78:                 response.Message = files.Count > 0
+79:                     ? "Files extracted successfully."
+80:                     : "No matching files found.";
+81: 
+82:                 response.Error = null;
+83:                 response.Data = files;
+84: 
+85:                 return Ok(response);
+86:             }
+87:             catch (Exception ex)
+88:             {
+89:                 response.Status = "Failed";
+90:                 response.Message = "File extraction failed.";
+91:                 response.Error = ex.Message;
+92:                 response.Data = null;
+93: 
+94:                 return Ok(response);
+95:             }
+96:         }
+```
+Exception is on line 87
+This exception was originally thrown at this call stack:
+[1] RegulatorFileExtractionAPI.Services.IfscaScraperService.GetLatestDocumentsAsync(RegulatorFileExtractionAPI.Models.APIRequest) in IfscaScraperService.cs
+[2] RegulatorFileExtractionAPI.Controllers.RegulatorFileExtractionController.ExtractFiles(RegulatorFileExtractionAPI.Models.APIRequest) in RegulatorFileExtractionController.cs
+The callstack context, if included, corresponds to the thread where this exception occurred. There is no need to identify this thread by other means.
+The top most frame in the callstack context should correspond to the place the exception message was thrown from. Code may or may not have been provided for it but can be requested.
+
+## CALLSTACK
+Thread ID: 36844
+[1] RegulatorFileExtractionAPI.dll!RegulatorFileExtractionAPI.Controllers.RegulatorFileExtractionController.ExtractFiles
+This is the current user focused stack frame. The provided locals context corresponds to this stack frame, but you may evaluate expressions and retrieve code for any frame.
+Code for the stack frame:
+```csharp Controllers\RegulatorFileExtractionController.cs
+21:         [HttpPost]
+22:         [Route("extract-files")]
+23:         public async Task<IHttpActionResult> ExtractFiles(APIRequest request)
+24:         {
+25:             var response = new APIResponse();
+26: 
+27:             try
+28:             {
+29:                 if (request == null)
+30:                 {
+31:                     response.Status = "Failed";
+32:                     response.Message = "Invalid request.";
+33:                     response.Error = "Request cannot be null.";
+34:                     response.Data = null;
+35: 
+36:                     return BadRequest(response.Message);
+37:                 }
+38: 
+39:                 if (string.IsNullOrWhiteSpace(request.RegulatorName))
+40:                 {
+41:                     response.Status = "Failed";
+42:                     response.Message = "RegulatorName is required.";
+43:                     response.Error = null;
+44:                     response.Data = null;
+45: 
+46:                     return Ok(response);
+47:                 }
+48: 
+49:                 if (!string.Equals(
+50:                     request.RegulatorName,
+51:                     "ifsca",
+52:                     StringComparison.OrdinalIgnoreCase))
+53:                 {
+54:                     response.Status = "Failed";
+55:                     response.Message = "Unsupported regulator.";
+56:                     response.Error = null;
+57:                     response.Data = null;
+58: 
+59:                     return Ok(response);
+60:                 }
+61: 
+62:                 if (string.IsNullOrWhiteSpace(request.RegulatorKey))
+63:                 {
+64:                     response.Status = "Failed";
+65:                     response.Message = "RegulatorKey is required.";
+66:                     response.Error = null;
+67:                     response.Data = null;
+68: 
+69:                     return Ok(response);
+70:                 }
+71: 
+72:                 var service = new IfscaScraperService();
+73: 
+74:                 List<FileExtractionModelFromURL> files = await service.GetLatestDocumentsAsync(request);
+75: 
+76:                 response.Status = "Success";
+77: 
+78:                 response.Message = files.Count > 0
+79:                     ? "Files extracted successfully."
+80:                     : "No matching files found.";
+81: 
+82:                 response.Error = null;
+83:                 response.Data = files;
+84: 
+85:                 return Ok(response);
+86:             }
+87:             catch (Exception ex)
+88:             {
+89:                 response.Status = "Failed";
+90:                 response.Message = "File extraction failed.";
+91:                 response.Error = ex.Message;
+92:                 response.Data = null;
+93: 
+94:                 return Ok(response);
+95:             }
+96:         }
+```
+Current statement: line 87
+[2] [External Code]
+
+## LOCALS
+Variable: 'this' of type 'RegulatorFileExtractionAPI.Controllers.RegulatorFileExtractionController' is a complex object with child properties and has value: {RegulatorFileExtractionAPI.Controllers.RegulatorFileExtractionController}
+Variable: 'request' of type 'RegulatorFileExtractionAPI.Models.APIRequest' is a complex object with child properties and has value: {RegulatorFileExtractionAPI.Models.APIRequest}
+Variable: 'response' of type 'RegulatorFileExtractionAPI.Models.APIResponse' is a complex object with child properties and has value: {RegulatorFileExtractionAPI.Models.APIResponse}
+Variable: 'ex' of type 'System.Exception' is a complex object with child properties and has value: null
+

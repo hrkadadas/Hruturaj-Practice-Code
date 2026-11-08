@@ -1,0 +1,57 @@
+﻿1. IFSCA
+condition 1: this is ifsca url: "https://ifsca.gov.in/Legal/Index/ogGPf3wx5GE=" 
+in this page there are more input controllers shown in the image, out of these need to focus on this search field only placeholder="Search Text by Title" and Search button "searchButton"
+I will pass the RegulatorName, RegulatorKey from .NET Framework 4.8 Web API action method like i created a method rest all properties are null(options)
+condition 2:
+if RegulatorName == "ifsca"
+{
+condition 3: search RegulatorKey from "Search Text by Title" input text then clicked "searchButton"
+condition 4: if there is the pagination after search then get all files from the list along with title
+condition 5: take current date to compare with their date column values from the list and get only last two files from the current date
+condition 6: return the list of two compared files with ("FileId, FilePublishDate", "FileName", "RegulatorName", "RegulatorKey", "CircularName = null", "CircularKey = null", "FileAsBytes")
+ to download file and save to database table
+}
+
+
+2. Mauritius-Regulations
+condition 1: this is the Mauritius-Regulations url "https://www.fscmauritius.org/regulatory-framework/rules-and-regulations/regulations"
+in this page there are multiple tabs ("Financial Services Act", "Financial Services Development Regulations 2001", "Insurance Act", "Securities Act", "Protected Cell Companies Act", "Prevention of Terrorism Act", "FIAMLA Act", "Captive Insurance Act"). there is div tag (class ="filter_btn_wp") and ul and li tags class="filter_list tab-nav"
+condition 2:
+if RegulatorName =="Mauritius-Regulations"
+{
+Select tha tab by "RegulatorKey" get the list of files
+condition 3: if there is the pagination after search then get all files from the list along with title
+condition 4: take current date to compare with their date or year from the lists files name and get only last two files from the current date
+condition 5: return the list of two compared files with ("FileId, FilePublishDate", "FileName", "RegulatorName", "RegulatorKey", "CircularName = null", "CircularKey = null", "FileAsBytes")
+ to download file and save to database table latter
+}
+
+
+
+
+
+
+Payoad ifsca:
+{
+"RegulatorName":"ifsca",
+"CircularName":"",
+"RegulatorKey":"Capital Market Intermediaries",
+"CircularKey":"",
+"Year":""
+}
+Payoad Mauritius-Regulations:
+{
+"RegulatorName":"Mauritius-Regulations",
+"CircularName":"",
+"RegulatorKey":"Securities",
+"CircularKey":"",
+"Year":""
+}
+Payoad Mauritius-Circulars
+{
+"RegulatorName":"",
+"CircularName":"Mauritius-Circulars",
+"RegulatorKey":"",
+"CircularKey":"",
+"Year":"2025"
+}

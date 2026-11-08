@@ -1,0 +1,219 @@
+﻿using HtmlAgilityPack;
+using RegulatorFileExtractionAPI.Models;
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Threading.Tasks;
+
+namespace RegulatorFileExtractionAPI.Services
+{
+    /// <summary>
+    /// HTML-only implementation of the IFSCA scraper.
+    /// Unlike IfscaScraperService, this implementation does not start Chrome
+    /// and does not execute JavaScript/DataTables code.
+    /// </summary>
+    public class IfscaScraperService_v1
+    {
+        private const string IfscaUrl = "https://ifsca.gov.in/Legal/Index/ogGPf3wx5GE=";
+
+        private const int RequestTimeoutSeconds = 300;
+
+        private class DocumentInfo
+        {
+            public string FileName { get; set; }
+            public string FilePublishDate { get; set; }
+            public DateTime PublishedDate { get; set; }
+            public string DownloadUrl { get; set; }
+        }
+
+        public async Task<List<FileExtractionModelFromURL>>GetLatestRegulationsAsync(APIRequest request)
+        {
+            if (request == null)
+                throw new ArgumentNullException("request");
+
+            var extractedDocuments = new List<DocumentInfo>();
+            var visitedPages = new HashSet<string>(
+                StringComparer.OrdinalIgnoreCase);
+
+            using (var client = CreateHttpClient())
+            {
+                string pageUrl = IfscaUrl;
+
+                while (!string.IsNullOrWhiteSpace(pageUrl) &&
+                       visitedPages.Add(pageUrl))
+                {
+                    string html = await client.GetStringAsync(pageUrl);
+                    var document = new HtmlDocument();
+                    document.LoadHtml(html);
+
+                    ExtractDocuments(document, request.RegulatorKey, pageUrl, extractedDocuments);
+
+                    pageUrl = FindNextPageUrl(document, pageUrl);
+                }
+
+                TimeZoneInfo indiaTimeZone = TimeZoneInfo.FindSystemTimeZoneById( "India Standard Time");
+
+                DateTime today = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, indiaTimeZone).Date;
+
+                var latestTwo = extractedDocuments
+                                .Where(x => x.PublishedDate.Date <= today)
+                                .GroupBy(x => x.DownloadUrl)
+                                .Select(g => g.First())
+                                .OrderByDescending(x => x.PublishedDate)
+                                .Take(2)
+                                .ToList();
+
+                var result = new List<FileExtractionModelFromURL>();
+
+                foreach (var item in latestTwo)
+                {
+                    byte[] fileBytes = await client.GetByteArrayAsync(
+                        item.DownloadUrl);
+
+                    result.Add(new FileExtractionModelFromURL
+                    {
+                        FileId = null,
+                        FilePublishDate = item.FilePublishDate,
+                        FileName = item.FileName,
+                        RegulatorName = request.RegulatorName,
+                        RegulatorKey = request.RegulatorKey,
+                        CircularName = request.CircularName,
+                        CircularKey = request.CircularKey,
+                        FileAsBytes = fileBytes
+                    });
+                }
+
+                return result;
+            }
+        }
+
+        // Compatibility with controllers that call the original method name.
+        public Task<List<FileExtractionModelFromURL>>
+            GetLatestDocumentsAsync(APIRequest request)
+        {
+            return GetLatestRegulationsAsync(request);
+        }
+
+        private static HttpClient CreateHttpClient()
+        {
+            var handler = new HttpClientHandler
+            {
+                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
+            };
+
+            var client = new HttpClient(handler);
+            client.Timeout = TimeSpan.FromSeconds(RequestTimeoutSeconds);
+            client.DefaultRequestHeaders.TryAddWithoutValidation(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+                "AppleWebKit/537.36 Chrome/157 Safari/537.36");
+            client.DefaultRequestHeaders.TryAddWithoutValidation(
+                "Accept",
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+
+            return client;
+        }
+
+        private static void ExtractDocuments(HtmlDocument document, string regulatorKey, string pageUrl, List<DocumentInfo> extractedDocuments)
+        {
+            var rows = document.DocumentNode.SelectNodes("//table//tbody//tr");
+
+            if (rows == null)
+                return;
+
+            foreach (var row in rows)
+            {
+                var cells = row.SelectNodes("./td");
+
+                if (cells == null || cells.Count < 5)
+                    continue;
+
+                string publishDate = CleanText(cells[1].InnerText);
+                string title = CleanText(cells[2].InnerText);
+
+                if (!string.IsNullOrWhiteSpace(regulatorKey) &&
+                    title.IndexOf(
+                        regulatorKey,
+                        StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    continue;
+                }
+
+                DateTime parsedDate;
+
+                if (!DateTime.TryParseExact(
+                    publishDate,
+                    "dd/MM/yyyy",
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.None,
+                    out parsedDate))
+                {
+                    continue;
+                }
+
+                var link = cells[4].SelectSingleNode(".//a[@href]");
+
+                if (link == null)
+                    continue;
+
+                string downloadUrl = link.GetAttributeValue("href", null);
+
+                if (string.IsNullOrWhiteSpace(downloadUrl))
+                    continue;
+
+                extractedDocuments.Add(new DocumentInfo
+                {
+                    FileName = title,
+                    FilePublishDate = publishDate,
+                    PublishedDate = parsedDate,
+                    DownloadUrl = ToAbsoluteUrl(pageUrl, downloadUrl)
+                });
+            }
+        }
+
+        private static string FindNextPageUrl(
+            HtmlDocument document,
+            string currentPageUrl)
+        {
+            var nextLink = document.DocumentNode.SelectSingleNode(
+                "//*[contains(concat(' ', normalize-space(@class), ' '), " +
+                "' paginate_button ') and " +
+                "contains(concat(' ', normalize-space(@class), ' '), " +
+                "' next ') and not(contains(@class, 'disabled'))]//a[@href]" +
+                " | //a[contains(translate(normalize-space(.), " +
+                "'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), " +
+                "'next') and @href]");
+
+            if (nextLink == null)
+                return null;
+
+            string href = nextLink.GetAttributeValue("href", null);
+
+            if (string.IsNullOrWhiteSpace(href) || href == "#")
+                return null;
+
+            return ToAbsoluteUrl(currentPageUrl, href);
+        }
+
+        private static string ToAbsoluteUrl(string currentPageUrl, string url)
+        {
+            Uri absoluteUri;
+
+            if (Uri.TryCreate(url, UriKind.Absolute, out absoluteUri))
+                return absoluteUri.ToString();
+
+            Uri baseUri = new Uri(currentPageUrl);
+            return new Uri(baseUri, url).ToString();
+        }
+
+        private static string CleanText(string value)
+        {
+            return WebUtility.HtmlDecode(value ?? string.Empty)
+                .Replace("\u00A0", " ")
+                .Trim();
+        }
+    }
+}

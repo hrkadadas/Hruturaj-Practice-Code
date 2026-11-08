@@ -1,0 +1,285 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using System.Net.Http;
+using System.Threading.Tasks;
+using OpenQA.Selenium;
+using OpenQA.Selenium.Chrome;
+using OpenQA.Selenium.Support.UI;
+using RegulatorFileExtractionAPI.Models;
+
+namespace RegulatorFileExtractionAPI.Services
+{
+    public class IfscaScraperService
+    {
+        private const string IfscaUrl = "https://ifsca.gov.in/Legal/Index/ogGPf3wx5GE=";
+
+        private class DocumentInfo
+        {
+            public string FileName { get; set; }
+            public string FilePublishDate { get; set; }
+            public DateTime PublishedDate { get; set; }
+            public string DownloadUrl { get; set; }
+        }
+
+        private static void DismissCookieBanner(IWebDriver driver)
+        {
+            var banner = driver.FindElements(
+                By.Id("cookieConsentBanner"))
+                .FirstOrDefault();
+
+            if (banner == null || !banner.Displayed)
+                return;
+
+            var javascript = (IJavaScriptExecutor)driver;
+
+            javascript.ExecuteScript(
+                "var banner = document.getElementById('cookieConsentBanner');" +
+                "if (banner) { banner.classList.remove('show'); " +
+                "banner.style.display = 'none'; " +
+                "banner.style.visibility = 'hidden'; } ");
+        }
+
+        public async Task<List<FileExtractionModelFromURL>> GetLatestRegulationsAsync(APIRequest request)
+        {
+            var extractedDocuments = new List<DocumentInfo>();
+
+            var options = new ChromeOptions();
+            options.AddArgument("--headless=new");
+            options.AddArgument("--disable-gpu");
+            options.AddArgument("--no-sandbox");
+
+            string driverDirectory =
+                System.Web.Hosting.HostingEnvironment.MapPath("~/bin")
+                ?? AppDomain.CurrentDomain.BaseDirectory;
+
+            var driverService = ChromeDriverService.CreateDefaultService(
+                driverDirectory,
+                "chromedriver.exe");
+
+            driverService.HideCommandPromptWindow = true;
+
+            using (var driver = new ChromeDriver(driverService, options))
+            {
+                var wait = new WebDriverWait(
+                    driver, TimeSpan.FromSeconds(300));
+
+                driver.Navigate().GoToUrl(IfscaUrl);
+
+                // Prevent the cookie banner from covering page controls.
+                DismissCookieBanner(driver);
+
+                // Search Text by Title
+                var searchInput = wait.Until(d =>
+                {
+                    var element = d.FindElement(
+                        By.CssSelector(
+                            "input[placeholder='Search Text by Title']"));
+
+                    return element.Displayed && element.Enabled
+                        ? element : null;
+                });
+
+                searchInput.Clear();
+                searchInput.SendKeys(request.RegulatorKey);
+
+                // Search button
+                var searchButton = wait.Until(d =>
+                {
+                    var element = d.FindElement(
+                        By.Id("searchButton"));
+
+                    return element.Displayed && element.Enabled
+                        ? element : null;
+                });
+
+                searchButton.Click();
+
+                // Wait for search results.
+                wait.Until(d =>
+                    d.FindElements(
+                        By.CssSelector("table tbody tr")).Any());
+
+                // Extract records from every page.
+                while (true)
+                {
+                    var rows = driver.FindElements(
+                        By.CssSelector("table tbody tr"));
+
+                    foreach (var row in rows)
+                    {
+                        var cells = row.FindElements(
+                            By.TagName("td"));
+
+                        if (cells.Count < 5)
+                            continue;
+
+                        string publishDate = cells[1].Text.Trim();
+                        string title = cells[2].Text.Trim();
+
+                        DateTime parsedDate;
+
+                        if (!DateTime.TryParseExact(
+                            publishDate,
+                            "dd/MM/yyyy",
+                            CultureInfo.InvariantCulture,
+                            DateTimeStyles.None,
+                            out parsedDate))
+                        {
+                            continue;
+                        }
+
+                        var downloadLink = cells[4].FindElements(
+                            By.CssSelector("a[href]"))
+                            .FirstOrDefault();
+
+                        if (downloadLink == null)
+                            continue;
+
+                        string downloadUrl =
+                            downloadLink.GetAttribute("href");
+
+                        if (string.IsNullOrWhiteSpace(downloadUrl))
+                            continue;
+
+                        extractedDocuments.Add(new DocumentInfo
+                        {
+                            FileName = title,
+                            FilePublishDate = publishDate,
+                            PublishedDate = parsedDate,
+                            DownloadUrl = downloadUrl
+                        });
+                    }
+
+                    // Pagination
+                    var nextButtons = driver.FindElements(
+                        By.CssSelector(
+                            ".dataTables_paginate .paginate_button.next"));
+
+                    if (nextButtons.Count == 1)
+                        break;
+
+                    string className =
+                        nextButtons.First().GetAttribute("class") ?? "";
+
+                    if (className.Contains("disabled"))
+                        break;
+
+                    string previousFirstRow = rows.Count > 0
+                        ? rows[0].Text : "";
+
+                    bool pageChanged = false;
+
+                    for (int attempt = 0; attempt < 3 && !pageChanged; attempt++)
+                    {
+                        try
+                        {
+                            DismissCookieBanner(driver);
+
+                            // Re-find the button on every attempt because the
+                            // table replaces its DOM after each update.
+                            var currentNextButton = driver.FindElements(
+                                By.CssSelector(
+                                    ".dataTables_paginate .paginate_button.next"))
+                                .FirstOrDefault();
+
+                            if (currentNextButton == null)
+                                break;
+
+                            ((IJavaScriptExecutor)driver).ExecuteScript(
+                                "arguments[0].scrollIntoView({block: 'center'});",
+                                currentNextButton);
+
+                            currentNextButton.Click();
+                            pageChanged = true;
+                        }
+                        catch (StaleElementReferenceException)
+                        {
+                            if (attempt == 2)
+                                throw;
+
+                            System.Threading.Thread.Sleep(250);
+                        }
+                        catch (ElementClickInterceptedException)
+                        {
+                            if (attempt == 2)
+                                throw;
+
+                            DismissCookieBanner(driver);
+                            System.Threading.Thread.Sleep(250);
+                        }
+                    }
+
+                    wait.Until(d =>
+                    {
+                        var newRows = d.FindElements(
+                            By.CssSelector("table tbody tr"));
+
+                        return newRows.Count > 0 &&
+                            newRows[0].Text != previousFirstRow;
+                    });
+                }
+            }
+
+            // Current Indian date.
+            var indiaTimeZone =
+                TimeZoneInfo.FindSystemTimeZoneById(
+                    "India Standard Time");
+
+            DateTime today =
+                TimeZoneInfo.ConvertTimeFromUtc(
+                    DateTime.UtcNow, indiaTimeZone).Date;
+
+            // Get the latest two published documents.
+            var latestTwo = extractedDocuments
+                .Where(x => x.PublishedDate.Date <= today)
+                .GroupBy(x => x.DownloadUrl)
+                .Select(g => g.First())
+                .OrderByDescending(x => x.PublishedDate)
+                .Take(2)
+                .ToList();
+
+            var result =
+                new List<FileExtractionModelFromURL>();
+
+            using (var client = new HttpClient())
+            {
+                client.Timeout = TimeSpan.FromMinutes(3);
+
+                foreach (var document in latestTwo)
+                {
+                    byte[] fileBytes =
+                        await client.GetByteArrayAsync(
+                            document.DownloadUrl);
+
+                    result.Add(
+                        new FileExtractionModelFromURL
+                        {
+                            FileId = null,
+                            FilePublishDate =
+                                document.FilePublishDate,
+
+                            FileName = document.FileName,
+
+                            RegulatorName =
+                                request.RegulatorName,
+
+                            RegulatorKey =
+                                request.RegulatorKey,
+
+                            CircularName =
+                                request.CircularName,
+
+                            CircularKey =
+                                request.CircularKey,
+
+                            FileAsBytes = fileBytes
+                        });
+                }
+            }
+
+            return result;
+        }
+    }
+}

@@ -1,0 +1,322 @@
+﻿using HtmlAgilityPack;
+using RegulatorFileExtractionAPI.Models;
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using System.Net.Http;
+using System.Security.Cryptography;
+using System.Text;
+using System.Threading.Tasks;
+using System.Web;
+
+namespace RegulatorFileExtractionAPI.Services
+{
+    public class MauritiusCircularsService
+    {
+        private const string CircularsUrl =
+            "https://www.fscmauritius.org/regulatory-framework/circulars";
+
+        private const string BaseUrl = "https://www.fscmauritius.org";
+        private const int MaxFileSize = 25 * 1024 * 1024;
+
+        private static readonly HttpClient Client = CreateClient();
+
+        private sealed class CircularDocument
+        {
+            public string FileName { get; set; }
+            public string PublishDate { get; set; }
+            public DateTime PublishedDate { get; set; }
+            public string DownloadUrl { get; set; }
+        }
+
+        public async Task<List<FileExtractionModelFromURL>>
+            GetLatestCircularsAsync(APIRequest request)
+        {
+            ValidateRequest(request);
+
+            int requestedYear;
+            if (!int.TryParse(request.Year, out requestedYear) ||
+                requestedYear < 1900 || requestedYear > 9999)
+            {
+                throw new ArgumentException(
+                    "Year must be a valid four-digit year.", "request");
+            }
+
+            string html = await Client.GetStringAsync(CircularsUrl);
+            var htmlDocument = new HtmlDocument();
+            htmlDocument.LoadHtml(html);
+
+            var documents = ExtractCirculars(
+                htmlDocument,
+                requestedYear,
+                CircularsUrl);
+
+            var latestTwo = documents
+                .Where(x => x.PublishedDate.Date <= DateTime.Today)
+                .GroupBy(x => x.DownloadUrl,
+                    StringComparer.OrdinalIgnoreCase)
+                .Select(x => x.First())
+                .OrderByDescending(x => x.PublishedDate)
+                .ThenByDescending(x => x.FileName)
+                .Take(2)
+                .ToList();
+
+            var result = new List<FileExtractionModelFromURL>();
+
+            foreach (var item in latestTwo)
+            {
+                try
+                {
+                    byte[] fileBytes = await DownloadFileAsync(
+                        item.DownloadUrl);
+
+                    if (fileBytes == null || fileBytes.Length == 0)
+                        continue;
+
+                    result.Add(new FileExtractionModelFromURL
+                    {
+                        FileId = GenerateFileId(item.DownloadUrl),
+                        FilePublishDate = item.PublishDate,
+                        FileName = item.FileName,
+                        RegulatorName = request.RegulatorName,
+                        RegulatorKey = request.RegulatorKey,
+                        CircularName = null,
+                        CircularKey = null,
+                        FileAsBytes = fileBytes
+                    });
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine(
+                        "Circular download failed: " + item.FileName +
+                        ": " + ex.Message);
+                }
+            }
+
+            return result;
+        }
+
+        // Compatibility alias for callers using a generic latest-documents name.
+        public Task<List<FileExtractionModelFromURL>>
+            GetLatestDocumentsAsync(APIRequest request)
+        {
+            return GetLatestCircularsAsync(request);
+        }
+
+        private static void ValidateRequest(APIRequest request)
+        {
+            if (request == null)
+                throw new ArgumentNullException("request");
+
+            if (string.IsNullOrWhiteSpace(request.Year))
+                throw new ArgumentException(
+                    "Year is required for Mauritius circulars.", "request");
+        }
+
+        private static List<CircularDocument> ExtractCirculars(
+            HtmlDocument document,
+            int requestedYear,
+            string pageUrl)
+        {
+            var result = new List<CircularDocument>();
+
+            // Confirm that the requested Circulars year filter exists.
+            var yearFilter = document.DocumentNode.SelectSingleNode(
+                "//*[contains(concat(' ', normalize-space(@class), ' '), " +
+                "' filter_div ') and @data-filter='Circulars' and " +
+                "@data-category='" + requestedYear + "']");
+
+            if (yearFilter == null)
+                return result;
+
+            var titleNodes = document.DocumentNode.SelectNodes(
+                "//*[contains(concat(' ', normalize-space(@class), ' '), " +
+                "' publication_info-title ')]");
+
+            if (titleNodes == null)
+                return result;
+
+            foreach (var titleNode in titleNodes)
+            {
+                var container = FindPublicationContainer(titleNode);
+                if (container == null)
+                    continue;
+
+                if (!IsCircularForYear(container, requestedYear))
+                    continue;
+
+                var dateNode = container.SelectSingleNode(
+                    ".//*[contains(concat(' ', normalize-space(@class), ' '), " +
+                    "' publication_info-date ')]");
+
+                DateTime publishedDate;
+                string publishDate = CleanText(dateNode == null
+                    ? null : dateNode.InnerText);
+
+                if (!TryParseDate(publishDate, out publishedDate) ||
+                    publishedDate.Year != requestedYear)
+                    continue;
+
+                var downloadNode = container.SelectSingleNode(
+                    ".//*[contains(concat(' ', normalize-space(@class), ' '), " +
+                    "' publication_repeat-right ')]//a[@href]");
+
+                if (downloadNode == null)
+                    continue;
+
+                string downloadUrl = downloadNode.GetAttributeValue(
+                    "href", null);
+
+                if (string.IsNullOrWhiteSpace(downloadUrl))
+                    continue;
+
+                result.Add(new CircularDocument
+                {
+                    FileName = CleanText(titleNode.InnerText),
+                    PublishDate = publishDate,
+                    PublishedDate = publishedDate,
+                    DownloadUrl = ToAbsoluteUrl(pageUrl, downloadUrl)
+                });
+            }
+
+            return result;
+        }
+
+        private static HtmlNode FindPublicationContainer(HtmlNode node)
+        {
+            HtmlNode current = node;
+
+            while (current != null)
+            {
+                string className = current.GetAttributeValue("class", "");
+
+                if (className.IndexOf("publication_repeat",
+                    StringComparison.OrdinalIgnoreCase) >= 0)
+                    return current;
+
+                current = current.ParentNode;
+            }
+
+            return null;
+        }
+
+        private static bool IsCircularForYear(
+            HtmlNode container,
+            int requestedYear)
+        {
+            string category = container.GetAttributeValue(
+                "data-category", null);
+            string filter = container.GetAttributeValue(
+                "data-filter", null);
+
+            if (!string.IsNullOrWhiteSpace(filter) &&
+                !string.Equals(filter, "Circulars",
+                    StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            if (string.IsNullOrWhiteSpace(category))
+            {
+                var categoryNode = container.Ancestors()
+                    .FirstOrDefault(x =>
+                        !string.IsNullOrWhiteSpace(
+                            x.GetAttributeValue("data-category", null)));
+
+                category = categoryNode == null
+                    ? null
+                    : categoryNode.GetAttributeValue("data-category", null);
+            }
+
+            return string.IsNullOrWhiteSpace(category) ||
+                string.Equals(category, requestedYear.ToString(
+                    CultureInfo.InvariantCulture),
+                    StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool TryParseDate(
+            string value,
+            out DateTime date)
+        {
+            string[] formats =
+            {
+                "dd/MM/yyyy", "d/M/yyyy", "dd-MM-yyyy", "d-M-yyyy",
+                "dd MMMM yyyy", "d MMMM yyyy", "dd MMM yyyy", "d MMM yyyy",
+                "MMMM dd, yyyy", "MMM dd, yyyy"
+            };
+
+            return DateTime.TryParseExact(
+                       value,
+                       formats,
+                       CultureInfo.InvariantCulture,
+                       DateTimeStyles.AllowWhiteSpaces,
+                       out date) ||
+                   DateTime.TryParse(
+                       value,
+                       CultureInfo.InvariantCulture,
+                       DateTimeStyles.AllowWhiteSpaces,
+                       out date);
+        }
+
+        private static async Task<byte[]> DownloadFileAsync(string url)
+        {
+            using (HttpResponseMessage response =
+                await Client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead))
+            {
+                response.EnsureSuccessStatusCode();
+
+                if (response.Content.Headers.ContentLength.HasValue &&
+                    response.Content.Headers.ContentLength.Value > MaxFileSize)
+                    throw new InvalidOperationException(
+                        "Circular file exceeds the maximum allowed size.");
+
+                byte[] bytes = await response.Content.ReadAsByteArrayAsync();
+
+                if (bytes.Length > MaxFileSize)
+                    throw new InvalidOperationException(
+                        "Circular file exceeds the maximum allowed size.");
+
+                return bytes;
+            }
+        }
+
+        private static string CleanText(string value)
+        {
+            return HttpUtility.HtmlDecode(value ?? string.Empty)
+                .Replace("\u00A0", " ")
+                .Trim();
+        }
+
+        private static string ToAbsoluteUrl(string pageUrl, string url)
+        {
+            Uri absoluteUri;
+
+            if (Uri.TryCreate(url, UriKind.Absolute, out absoluteUri))
+                return absoluteUri.ToString();
+
+            return new Uri(new Uri(pageUrl), url).ToString();
+        }
+
+        private static string GenerateFileId(string value)
+        {
+            using (var sha256 = SHA256.Create())
+            {
+                byte[] hash = sha256.ComputeHash(
+                    Encoding.UTF8.GetBytes(value ?? string.Empty));
+
+                return BitConverter.ToString(hash)
+                    .Replace("-", string.Empty)
+                    .ToLowerInvariant();
+            }
+        }
+
+        private static HttpClient CreateClient()
+        {
+            var client = new HttpClient();
+            client.Timeout = TimeSpan.FromSeconds(90);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+                "AppleWebKit/537.36 Chrome/120.0 Safari/537.36");
+            return client;
+        }
+    }
+}
